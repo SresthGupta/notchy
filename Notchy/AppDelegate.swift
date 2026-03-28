@@ -100,9 +100,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupHotkey() {
-        // Global monitor: fires when another app is focused (Cmd+Shift+Space = keyCode 49)
+        // Global monitor: fires when another app is focused (Cmd+Shift+Z = keyCode 6)
         hotkeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 49,
+            guard event.keyCode == 6,
                   event.modifierFlags.contains(.command),
                   event.modifierFlags.contains(.shift)
             else { return }
@@ -110,7 +110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Local monitor: fires when Notchy itself is focused
         localHotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 49,
+            guard event.keyCode == 6,
                   event.modifierFlags.contains(.command),
                   event.modifierFlags.contains(.shift)
             else { return event }

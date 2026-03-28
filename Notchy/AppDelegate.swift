@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import ScreenCaptureKit
 import SwiftUI
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -9,9 +10,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverHideTimer: Timer?
     private var hoverGlobalMonitor: Any?
     private var hoverLocalMonitor: Any?
-    private var hotkeyMonitor: Any?
-    private var localHotkeyMonitor: Any?
-    private var screenshotGlobalMonitor: Any?
+    private var toggleHotkeyRef: EventHotKeyRef?
+    private var screenshotHotkeyRef: EventHotKeyRef?
     /// Whether the panel was opened via notch hover (vs status item click)
     private var panelOpenedViaHover = false
     private let hoverMargin: CGFloat = 15
@@ -100,32 +100,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupHotkey() {
-        // Global monitor: fires when another app is focused (Cmd+Shift+Z = keyCode 6)
-        hotkeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 6,
-                  event.modifierFlags.contains(.command),
-                  event.modifierFlags.contains(.shift)
-            else { return }
-            DispatchQueue.main.async { self?.togglePanel() }
-        }
-        // Local monitor: fires when Notchy itself is focused
-        localHotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 6,
-                  event.modifierFlags.contains(.command),
-                  event.modifierFlags.contains(.shift)
-            else { return event }
-            DispatchQueue.main.async { self?.togglePanel() }
-            return nil
-        }
+        // Use Carbon RegisterEventHotKey for reliable system-wide hotkeys.
+        // NSEvent.addGlobalMonitorForEvents only observes -- apps consume the
+        // event first (e.g., Cmd+Shift+Z = Redo), so the monitor never fires.
+        // Carbon hotkeys intercept at the system level before any app sees them.
 
-        // Screenshot hotkey: Cmd+Shift+S (global)
-        screenshotGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 1,  // S key
-                  event.modifierFlags.contains(.command),
-                  event.modifierFlags.contains(.shift)
-            else { return }
-            DispatchQueue.main.async { self?.captureAndSendScreenshot() }
-        }
+        // Install Carbon event handler for hotkeys
+        let handlerRef = UnsafeMutablePointer<EventHandlerRef?>.allocate(capacity: 1)
+        var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
+            var hotKeyID = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+            switch hotKeyID.id {
+            case 1:
+                DispatchQueue.main.async {
+                    (NSApp.delegate as? AppDelegate)?.togglePanel()
+                }
+            case 2:
+                DispatchQueue.main.async {
+                    (NSApp.delegate as? AppDelegate)?.captureAndSendScreenshot()
+                }
+            default:
+                break
+            }
+            return noErr
+        }, 1, &eventSpec, nil, handlerRef)
+
+        // Register Cmd+Shift+Z (keyCode 6) for panel toggle
+        var toggleHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 1) // 'NTCH'
+        RegisterEventHotKey(UInt32(kVK_ANSI_Z), UInt32(cmdKey | shiftKey), toggleHotKeyID, GetApplicationEventTarget(), 0, &toggleHotkeyRef)
+
+        // Register Cmd+Shift+S (keyCode 1) for screenshot
+        var screenshotHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 2) // 'NTCH'
+        RegisterEventHotKey(UInt32(kVK_ANSI_S), UInt32(cmdKey | shiftKey), screenshotHotKeyID, GetApplicationEventTarget(), 0, &screenshotHotkeyRef)
+
+        handlerRef.deallocate()
     }
 
     // MARK: - Screenshot Capture

@@ -93,10 +93,12 @@ class TerminalPanel: NSPanel {
     }
 
     private func focusActiveTerminal() {
-        guard let activeId = sessionStore.activeSessionId else { return }
-        let terminal = TerminalManager.shared.terminalIfExists(for: activeId)
-        if let terminalView = terminal {
-            makeFirstResponder(terminalView)
+        // Dispatch async to let SwiftUI attach the terminal view to the hierarchy first
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let activeId = self.sessionStore.activeSessionId else { return }
+            if let terminalView = TerminalManager.shared.terminalIfExists(for: activeId) {
+                self.makeFirstResponder(terminalView)
+            }
         }
     }
 

@@ -10,6 +10,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverGlobalMonitor: Any?
     private var hoverLocalMonitor: Any?
     private var hotkeyMonitor: Any?
+    private var localHotkeyMonitor: Any?
+    private var screenshotGlobalMonitor: Any?
     /// Whether the panel was opened via notch hover (vs status item click)
     private var panelOpenedViaHover = false
     private let hoverMargin: CGFloat = 15
@@ -107,7 +109,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.togglePanel() }
         }
         // Local monitor: fires when Notchy itself is focused
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        localHotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 49,
                   event.modifierFlags.contains(.command),
                   event.modifierFlags.contains(.shift)
@@ -117,7 +119,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Screenshot hotkey: Cmd+Shift+S (global)
-        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        screenshotGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 1,  // S key
                   event.modifierFlags.contains(.command),
                   event.modifierFlags.contains(.shift)
@@ -137,19 +139,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) ?? NSScreen.main else { return }
         guard let displayID = targetScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return }
 
+        // Capture window numbers on main thread before entering async Task
+        var notchyWindowIDs: Set<CGWindowID> = [CGWindowID(panel.windowNumber)]
+        if let nw = notchWindow {
+            notchyWindowIDs.insert(CGWindowID(nw.windowNumber))
+        }
+
         Task {
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 guard let scDisplay = content.displays.first(where: { $0.displayID == displayID }) else { return }
-
-                // Exclude Notchy windows from capture
-                let notchyWindowIDs: Set<CGWindowID> = {
-                    var ids: Set<CGWindowID> = [CGWindowID(self.panel.windowNumber)]
-                    if let nw = self.notchWindow {
-                        ids.insert(CGWindowID(nw.windowNumber))
-                    }
-                    return ids
-                }()
                 let excludedWindows = content.windows.filter { notchyWindowIDs.contains(CGWindowID($0.windowID)) }
 
                 let filter = SCContentFilter(display: scDisplay, excludingWindows: excludedWindows)
@@ -161,7 +160,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
 
                 // Save to temp file
-                let timestamp = Int(Date().timeIntervalSince1970)
+                let timestamp = Int(Date().timeIntervalSince1970 * 1000)
                 let path = "/tmp/notchy-screenshot-\(timestamp).png"
                 let url = URL(fileURLWithPath: path)
                 let rep = NSBitmapImageRep(cgImage: image)
@@ -170,7 +169,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 // Send to active terminal session
                 await MainActor.run {
-                    TerminalManager.shared.sendText(to: activeId, text: "\(path) Help me with what you see on my screen.\n")
+                    TerminalManager.shared.sendText(to: activeId, text: "\(path) Help me with what you see on my screen.\r")
                 }
             } catch {
                 // Silent failure -- no visible indication during stealth usage

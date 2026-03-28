@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverHideTimer: Timer?
     private var hoverGlobalMonitor: Any?
     private var hoverLocalMonitor: Any?
+    private var carbonHandlerRef: EventHandlerRef?
     private var toggleHotkeyRef: EventHotKeyRef?
     private var screenshotHotkeyRef: EventHotKeyRef?
     /// Whether the panel was opened via notch hover (vs status item click)
@@ -29,7 +30,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var stealthMode: Bool {
         get {
-            UserDefaults.standard.bool(forKey: "stealthMode")
+            if UserDefaults.standard.object(forKey: "stealthMode") == nil { return true }
+            return UserDefaults.standard.bool(forKey: "stealthMode")
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "stealthMode")
@@ -100,13 +102,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupHotkey() {
-        // Use Carbon RegisterEventHotKey for reliable system-wide hotkeys.
-        // NSEvent.addGlobalMonitorForEvents only observes -- apps consume the
-        // event first (e.g., Cmd+Shift+Z = Redo), so the monitor never fires.
-        // Carbon hotkeys intercept at the system level before any app sees them.
+        // Carbon RegisterEventHotKey intercepts at the system level before any
+        // app sees the event. NSEvent.addGlobalMonitorForEvents only observes
+        // and fails when the frontmost app handles the key combo.
 
-        // Install Carbon event handler for hotkeys
-        let handlerRef = UnsafeMutablePointer<EventHandlerRef?>.allocate(capacity: 1)
         var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
             var hotKeyID = EventHotKeyID()
@@ -124,17 +123,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 break
             }
             return noErr
-        }, 1, &eventSpec, nil, handlerRef)
+        }, 1, &eventSpec, nil, &carbonHandlerRef)
 
-        // Register Cmd+Shift+Z (keyCode 6) for panel toggle
-        var toggleHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 1) // 'NTCH'
-        RegisterEventHotKey(UInt32(kVK_ANSI_Z), UInt32(cmdKey | shiftKey), toggleHotKeyID, GetApplicationEventTarget(), 0, &toggleHotkeyRef)
+        // Ctrl+` (backtick) for panel toggle -- no conflict with standard shortcuts
+        let toggleHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 1)
+        RegisterEventHotKey(UInt32(kVK_ANSI_Grave), UInt32(controlKey), toggleHotKeyID, GetApplicationEventTarget(), 0, &toggleHotkeyRef)
 
-        // Register Cmd+Shift+S (keyCode 1) for screenshot
-        var screenshotHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 2) // 'NTCH'
+        // Cmd+Shift+S for screenshot
+        let screenshotHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 2)
         RegisterEventHotKey(UInt32(kVK_ANSI_S), UInt32(cmdKey | shiftKey), screenshotHotKeyID, GetApplicationEventTarget(), 0, &screenshotHotkeyRef)
-
-        handlerRef.deallocate()
     }
 
     // MARK: - Screenshot Capture

@@ -125,9 +125,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return noErr
         }, 1, &eventSpec, nil, &carbonHandlerRef)
 
-        // Ctrl+` (backtick) for panel toggle -- no conflict with standard shortcuts
+        // Cmd+Shift+Z for panel toggle
         let toggleHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 1)
-        RegisterEventHotKey(UInt32(kVK_ANSI_Grave), UInt32(controlKey), toggleHotKeyID, GetApplicationEventTarget(), 0, &toggleHotkeyRef)
+        RegisterEventHotKey(UInt32(kVK_ANSI_Z), UInt32(cmdKey | shiftKey), toggleHotKeyID, GetApplicationEventTarget(), 0, &toggleHotkeyRef)
 
         // Cmd+Shift+S for screenshot
         let screenshotHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 2)

@@ -218,10 +218,9 @@ class TerminalManager: NSObject, LocalProcessTerminalViewDelegate {
             execName: "-" + (shell as NSString).lastPathComponent
         )
 
-        // cd to working directory, launch claude only if CLAUDE.md exists
+        // cd to working directory and launch claude
         let escapedDir = shellEscape(workingDirectory)
-        let hasClaude = launchClaude && FileManager.default.fileExists(atPath: (workingDirectory as NSString).appendingPathComponent("CLAUDE.md"))
-        if hasClaude {
+        if launchClaude {
             terminal.send(txt: "cd \(escapedDir) && clear && claude\r")
         } else {
             terminal.send(txt: "cd \(escapedDir) && clear\r")
@@ -247,6 +246,16 @@ class TerminalManager: NSObject, LocalProcessTerminalViewDelegate {
     }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {}
+
+    /// Returns the terminal view for a session if it already exists (does not create one).
+    func terminalIfExists(for sessionId: UUID) -> LocalProcessTerminalView? {
+        terminals[sessionId]
+    }
+
+    /// Sends text to an existing terminal session. No-ops if the session doesn't exist.
+    func sendText(to sessionId: UUID, text: String) {
+        terminals[sessionId]?.send(txt: text)
+    }
 
     /// Returns the visible text from a terminal's buffer
     func visibleText(for sessionId: UUID) -> String? {

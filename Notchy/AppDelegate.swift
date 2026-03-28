@@ -1,4 +1,5 @@
 import AppKit
+import ScreenCaptureKit
 import SwiftUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -24,6 +25,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var stealthMode: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "stealthMode")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "stealthMode")
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         setupPanel()
@@ -31,6 +41,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             setupNotchWindow()
         }
         setupHotkey()
+        applyStealthMode()
         // Detect in background so launch isn't blocked
         sessionStore.detectAllXcodeProjectsAsync()
     }
@@ -81,15 +92,89 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow?.isPanelVisible = { [weak self] in
             self?.panel.isVisible ?? false
         }
+        if stealthMode {
+            notchWindow?.sharingType = .none
+        }
     }
 
     private func setupHotkey() {
-        // Global monitor: fires when another app is focused (backtick = keyCode 50)
+        // Global monitor: fires when another app is focused (Cmd+Shift+Space = keyCode 49)
         hotkeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 50,
-                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.function).isEmpty
+            guard event.keyCode == 49,
+                  event.modifierFlags.contains(.command),
+                  event.modifierFlags.contains(.shift)
             else { return }
             DispatchQueue.main.async { self?.togglePanel() }
+        }
+        // Local monitor: fires when Notchy itself is focused
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 49,
+                  event.modifierFlags.contains(.command),
+                  event.modifierFlags.contains(.shift)
+            else { return event }
+            DispatchQueue.main.async { self?.togglePanel() }
+            return nil
+        }
+
+        // Screenshot hotkey: Cmd+Shift+S (global)
+        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 1,  // S key
+                  event.modifierFlags.contains(.command),
+                  event.modifierFlags.contains(.shift)
+            else { return }
+            DispatchQueue.main.async { self?.captureAndSendScreenshot() }
+        }
+    }
+
+    // MARK: - Screenshot Capture
+
+    func captureAndSendScreenshot() {
+        guard let activeId = sessionStore.activeSessionId else { return }
+        guard TerminalManager.shared.terminalIfExists(for: activeId) != nil else { return }
+
+        // Find the screen containing the mouse cursor
+        let mouseLocation = NSEvent.mouseLocation
+        guard let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) ?? NSScreen.main else { return }
+        guard let displayID = targetScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return }
+
+        Task {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                guard let scDisplay = content.displays.first(where: { $0.displayID == displayID }) else { return }
+
+                // Exclude Notchy windows from capture
+                let notchyWindowIDs: Set<CGWindowID> = {
+                    var ids: Set<CGWindowID> = [CGWindowID(self.panel.windowNumber)]
+                    if let nw = self.notchWindow {
+                        ids.insert(CGWindowID(nw.windowNumber))
+                    }
+                    return ids
+                }()
+                let excludedWindows = content.windows.filter { notchyWindowIDs.contains(CGWindowID($0.windowID)) }
+
+                let filter = SCContentFilter(display: scDisplay, excludingWindows: excludedWindows)
+                let config = SCStreamConfiguration()
+                config.width = scDisplay.width * 2
+                config.height = scDisplay.height * 2
+                config.showsCursor = false
+
+                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+
+                // Save to temp file
+                let timestamp = Int(Date().timeIntervalSince1970)
+                let path = "/tmp/notchy-screenshot-\(timestamp).png"
+                let url = URL(fileURLWithPath: path)
+                let rep = NSBitmapImageRep(cgImage: image)
+                guard let pngData = rep.representation(using: .png, properties: [:]) else { return }
+                try pngData.write(to: url)
+
+                // Send to active terminal session
+                await MainActor.run {
+                    TerminalManager.shared.sendText(to: activeId, text: "\(path) Help me with what you see on my screen.\n")
+                }
+            } catch {
+                // Silent failure -- no visible indication during stealth usage
+            }
         }
     }
 
@@ -203,6 +288,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         notchItem.state = replaceNotch ? .on : .off
         menu.addItem(notchItem)
 
+        let stealthItem = NSMenuItem(
+            title: "Stealth Mode",
+            action: #selector(toggleStealthMode),
+            keyEquivalent: ""
+        )
+        stealthItem.target = self
+        stealthItem.state = stealthMode ? .on : .off
+        menu.addItem(stealthItem)
+
         menu.addItem(.separator())
 
         if !sessionStore.sessions.isEmpty {
@@ -314,6 +408,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let projectDir = (dir as NSString).deletingLastPathComponent
         guard let latest = CheckpointManager.shared.checkpoints(for: session.projectName, in: projectDir).first else { return }
         sessionStore.restoreCheckpoint(latest, for: sessionId)
+    }
+
+    private func applyStealthMode() {
+        let sharingType: NSWindow.SharingType = stealthMode ? .none : .readOnly
+        panel.sharingType = sharingType
+        notchWindow?.sharingType = sharingType
+    }
+
+    @objc private func toggleStealthMode() {
+        stealthMode = !stealthMode
+        applyStealthMode()
     }
 
     @objc private func toggleReplaceNotch() {

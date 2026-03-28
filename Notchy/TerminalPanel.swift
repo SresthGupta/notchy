@@ -76,6 +76,7 @@ class TerminalPanel: NSPanel {
             setFrameOrigin(NSPoint(x: x, y: y))
         }
         makeKeyAndOrderFront(nil)
+        focusActiveTerminal()
         NotificationCenter.default.post(name: .NotchyNotchStatusChanged, object: nil)
     }
 
@@ -87,7 +88,16 @@ class TerminalPanel: NSPanel {
         let y = screenFrame.maxY - panelHeight
         setFrameOrigin(NSPoint(x: x, y: y))
         makeKeyAndOrderFront(nil)
+        focusActiveTerminal()
         NotificationCenter.default.post(name: .NotchyNotchStatusChanged, object: nil)
+    }
+
+    private func focusActiveTerminal() {
+        guard let activeId = sessionStore.activeSessionId else { return }
+        let terminal = TerminalManager.shared.terminalIfExists(for: activeId)
+        if let terminalView = terminal {
+            makeFirstResponder(terminalView)
+        }
     }
 
     func hidePanel() {
@@ -157,7 +167,12 @@ class TerminalPanel: NSPanel {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "s" {
+        // Cmd+Shift+S: screenshot capture (must come before Cmd+S check)
+        if event.modifierFlags.contains(.command) && event.modifierFlags.contains(.shift) && event.charactersIgnoringModifiers == "s" {
+            (NSApp.delegate as? AppDelegate)?.captureAndSendScreenshot()
+            return true
+        }
+        if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) && event.charactersIgnoringModifiers == "s" {
             sessionStore.createCheckpointForActiveSession()
             return true
         }

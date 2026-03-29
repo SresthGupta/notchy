@@ -141,29 +141,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private static let defaultScreenshotPrompt = "Help me with what you see on my screen."
 
     func captureAndSendScreenshot() {
-        if stealthMode {
-            // Stealth mode: capture and send immediately with default prompt
-            Task {
-                guard let path = await captureScreenshot() else { return }
-                await MainActor.run {
-                    sendScreenshot(path: path, prompt: Self.defaultScreenshotPrompt)
-                }
-            }
-        } else {
-            // Non-stealth: capture first, then show prompt box
-            guard pendingScreenshotPath == nil else { return } // ignore rapid double-press
-            Task {
-                guard let path = await captureScreenshot() else { return }
-                await MainActor.run {
-                    self.pendingScreenshotPath = path
-                    if let nw = self.notchWindow {
-                        NSApp.activate(ignoringOtherApps: true)
-                        nw.showPromptInput()
-                    } else {
-                        // No notch window (user disabled it) -- send with default prompt
-                        self.sendScreenshot(path: path, prompt: Self.defaultScreenshotPrompt)
-                        self.pendingScreenshotPath = nil
-                    }
+        guard pendingScreenshotPath == nil else { return } // ignore rapid double-press
+        Task {
+            guard let path = await captureScreenshot() else { return }
+            await MainActor.run {
+                self.pendingScreenshotPath = path
+                if let nw = self.notchWindow {
+                    NSApp.activate(ignoringOtherApps: true)
+                    nw.showPromptInput()
+                } else {
+                    // No notch window (user disabled it) -- send with default prompt
+                    self.sendScreenshot(path: path, prompt: Self.defaultScreenshotPrompt)
+                    self.pendingScreenshotPath = nil
                 }
             }
         }

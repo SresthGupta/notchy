@@ -26,17 +26,24 @@ struct TerminalSession: Identifiable {
     let createdAt: Date
     /// When the session most recently entered the .working state
     var workingStartedAt: Date?
+    /// Whether this session's name was auto-generated (true) or manually set (false)
+    var isAutoNamed: Bool
+    /// The prompt text that generated the current auto-name, used for topic shift detection
+    var lastAutoNamePrompt: String?
 
     init(projectName: String, projectPath: String? = nil, workingDirectory: String? = nil, started: Bool = false) {
         self.id = UUID()
         self.projectName = projectName
         self.projectPath = projectPath
-        self.workingDirectory = workingDirectory ?? projectPath ?? NSHomeDirectory()
+        self.workingDirectory = workingDirectory ?? projectPath ?? (NSHomeDirectory() as NSString).appendingPathComponent("Agents")
         self.hasStarted = started
         self.terminalStatus = .idle
         self.generation = 0
         self.hasBeenSelected = started // if started immediately (e.g. "+" button), mark as selected
         self.createdAt = Date()
+        // Plain terminals (no project) are auto-named; Xcode project sessions keep their project name
+        self.isAutoNamed = projectPath == nil
+        self.lastAutoNamePrompt = nil
     }
 
     /// Restore a session from persisted data
@@ -50,6 +57,9 @@ struct TerminalSession: Identifiable {
         self.generation = 0
         self.hasBeenSelected = false
         self.createdAt = Date()
+        // Restored sessions are always Xcode projects, so not auto-named
+        self.isAutoNamed = false
+        self.lastAutoNamePrompt = nil
     }
 }
 

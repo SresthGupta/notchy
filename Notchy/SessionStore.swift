@@ -102,7 +102,8 @@ class SessionStore {
     }
 
     private func persistSessions() {
-        let persisted = sessions.map { PersistedSession(id: $0.id, projectName: $0.projectName, projectPath: $0.projectPath, workingDirectory: $0.workingDirectory) }
+        // Only persist Xcode project sessions; plain terminals are cheap to recreate
+        let persisted = sessions.filter { $0.projectPath != nil }.map { PersistedSession(id: $0.id, projectName: $0.projectName, projectPath: $0.projectPath, workingDirectory: $0.workingDirectory) }
         if let data = try? JSONEncoder().encode(persisted) {
             UserDefaults.standard.set(data, forKey: Self.sessionsKey)
         }
@@ -115,6 +116,8 @@ class SessionStore {
 
     func updateWorkingDirectory(_ id: UUID, directory: String) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+        // Don't update workingDirectory for plain terminals -- their dir is pinned
+        guard sessions[index].projectPath != nil else { return }
         guard sessions[index].workingDirectory != directory else { return }
         sessions[index].workingDirectory = directory
         persistSessions()
@@ -247,9 +250,9 @@ class SessionStore {
     }
 
     /// "+" button: creates a plain terminal session with no project association
-    func createQuickSession() {
+    func createQuickSession(name: String = "Terminal") {
         let session = TerminalSession(
-            projectName: "Terminal",
+            projectName: name,
             started: true
         )
         sessions.append(session)
@@ -257,10 +260,73 @@ class SessionStore {
         persistSessions()
     }
 
-    func renameSession(_ id: UUID, to newName: String) {
+    func renameSession(_ id: UUID, to newName: String, manual: Bool = false) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         sessions[index].projectName = newName
+        if manual {
+            sessions[index].isAutoNamed = false
+        }
         persistSessions()
+    }
+
+    // MARK: - Auto-Naming
+
+    /// Set of session IDs currently being named (prevents concurrent CLI calls)
+    private var namingInFlight: Set<UUID> = []
+    /// Timestamps of last rename per session (enforces cooldown)
+    private var lastRenameTime: [UUID: Date] = [:]
+    /// Minimum seconds between rename attempts for the same session
+    private static let renameCooldown: TimeInterval = 30
+
+    /// Automatically rename a plain terminal session based on the user's prompt.
+    /// Called when a waitingForInput -> working transition is detected.
+    func autoRenameIfNeeded(_ id: UUID, prompt: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+        let session = sessions[index]
+
+        // Only auto-name plain terminals that haven't been manually renamed
+        guard session.isAutoNamed, session.projectPath == nil else { return }
+
+        // Check cooldown
+        if let lastTime = lastRenameTime[id],
+           Date().timeIntervalSince(lastTime) < Self.renameCooldown {
+            return
+        }
+
+        // Check if naming is already in flight for this session
+        guard !namingInFlight.contains(id) else { return }
+
+        // First prompt: always trigger naming
+        // Subsequent prompts: check for topic shift
+        if session.projectName != "Terminal" {
+            guard let lastPrompt = session.lastAutoNamePrompt else { return }
+            let oldWords = Set(lastPrompt.lowercased().split(separator: " "))
+            let newWords = Set(prompt.lowercased().split(separator: " "))
+            let overlap = oldWords.intersection(newWords)
+            let totalUnique = oldWords.union(newWords)
+            // If more than 50% overlap, topic hasn't shifted enough
+            if !totalUnique.isEmpty && Double(overlap.count) / Double(totalUnique.count) > 0.5 {
+                return
+            }
+        }
+
+        namingInFlight.insert(id)
+
+        TabNameService.shared.generateName(from: prompt) { [weak self] name in
+            guard let self, let name else {
+                self?.namingInFlight.remove(id)
+                return
+            }
+            guard let idx = self.sessions.firstIndex(where: { $0.id == id }),
+                  self.sessions[idx].isAutoNamed else {
+                self.namingInFlight.remove(id)
+                return
+            }
+            self.sessions[idx].projectName = name
+            self.sessions[idx].lastAutoNamePrompt = prompt
+            self.lastRenameTime[id] = Date()
+            self.namingInFlight.remove(id)
+        }
     }
 
     func updateTerminalStatus(_ id: UUID, status: TerminalStatus) {

@@ -15,7 +15,7 @@ struct SessionTabBar: View {
                     onSelect: { sessionStore.selectSession(session.id) },
                     onClose: { sessionStore.closeSession(session.id) },
                     onRename: { newName in
-                        sessionStore.renameSession(session.id, to: newName)
+                        sessionStore.renameSession(session.id, to: newName, manual: true)
                     }
                 )
             }

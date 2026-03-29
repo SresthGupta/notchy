@@ -5,6 +5,8 @@ class ClickThroughTerminalView: LocalProcessTerminalView {
     var sessionId: UUID?
     private var keyMonitor: Any?
     private var statusDebounceTimer: Timer?
+    /// Tracks the last reported status for detecting transitions (e.g. waitingForInput -> working)
+    private var lastReportedStatus: TerminalStatus = .idle
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -113,6 +115,44 @@ class ClickThroughTerminalView: LocalProcessTerminalView {
         return relevantText(from: lineTexts)
     }
 
+    /// Extracts the user's most recent prompt text from the terminal buffer.
+    /// Looks for the last line with the ❯ prompt indicator and returns the text after it.
+    func extractUserPrompt() -> String? {
+        guard let lineTexts = extractAllLines() else { return nil }
+
+        // Find the last line with the prompt indicator (❯ followed by space and digit)
+        var promptLineIndex: Int?
+        for i in stride(from: lineTexts.count - 1, through: 0, by: -1) {
+            let trimmed = lineTexts[i].drop(while: { $0 == " " })
+            if trimmed.hasPrefix("❯") &&
+                trimmed.dropFirst().first == " " &&
+                trimmed.dropFirst(2).first?.isNumber == true {
+                promptLineIndex = i
+                break
+            }
+        }
+
+        guard let startIndex = promptLineIndex else { return nil }
+
+        // Extract text from the prompt line onward, stopping at a separator or end
+        let separator = "────────"
+        var promptLines: [String] = []
+        for i in startIndex..<lineTexts.count {
+            if i != startIndex && lineTexts[i].contains(separator) { break }
+            promptLines.append(lineTexts[i])
+        }
+
+        // Join and strip the prompt indicator prefix (❯ N <text>)
+        var fullPrompt = promptLines.joined(separator: " ")
+        // Remove leading whitespace + ❯ + space + digit(s) + space
+        if let range = fullPrompt.range(of: #"^\s*❯\s+\d+\s+"#, options: .regularExpression) {
+            fullPrompt = String(fullPrompt[range.upperBound...])
+        }
+
+        let result = fullPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty ? nil : result
+    }
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         super.dataReceived(slice: slice)
 
@@ -144,6 +184,16 @@ class ClickThroughTerminalView: LocalProcessTerminalView {
         } else {
             newStatus = .idle
         }
+
+        // Detect waitingForInput -> working transition for auto-naming
+        if newStatus == .working && lastReportedStatus == .waitingForInput {
+            if let prompt = extractUserPrompt() {
+                DispatchQueue.main.async {
+                    SessionStore.shared.autoRenameIfNeeded(id, prompt: prompt)
+                }
+            }
+        }
+        lastReportedStatus = newStatus
 
         if !SessionStore.shared.sessions.contains(where: {$0.id == id && $0.terminalStatus == newStatus}) {
             DispatchQueue.main.async {

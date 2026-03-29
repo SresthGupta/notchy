@@ -4,8 +4,8 @@ import ScreenCaptureKit
 import SwiftUI
 
 extension KeyboardShortcuts.Name {
-    static let togglePanel = Self("togglePanel", default: .init(.n, modifiers: [.command, .option]))
-    static let screenshotToClaude = Self("screenshotToClaude", default: .init(.f, modifiers: [.command, .option]))
+    static let togglePanel = Self("togglePanel", default: .init(.space, modifiers: [.option]))
+    static let screenshotToClaude = Self("screenshotToClaude", default: .init(.f, modifiers: [.option]))
 }
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -113,10 +113,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupHotkeys() {
-        // Force-reset the toggle shortcut to Cmd+Option+N
-        // (KeyboardShortcuts persists user prefs in UserDefaults; the old Cmd+Option+D
-        // binding may be cached from a previous run and conflicts with Dock show/hide)
+        // Force-reset shortcuts to current defaults
+        // (KeyboardShortcuts persists user prefs in UserDefaults; stale cached
+        // bindings from a previous run may conflict or simply be wrong)
         KeyboardShortcuts.reset(.togglePanel)
+        KeyboardShortcuts.reset(.screenshotToClaude)
 
         KeyboardShortcuts.onKeyUp(for: .togglePanel) { [weak self] in
             self?.togglePanel()

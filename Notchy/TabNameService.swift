@@ -8,6 +8,7 @@ class TabNameService {
     private init() {
         // Resolve claude binary path at init
         claudePath = Self.findClaude()
+        NSLog("[AutoName] TabNameService init, claudePath: %@", claudePath ?? "<nil>")
     }
 
     /// Generate a 2-4 word tab name from the user's prompt text.
@@ -57,6 +58,7 @@ class TabNameService {
         do {
             try process.run()
         } catch {
+            NSLog("[AutoName] Process launch failed: %@", error.localizedDescription)
             return nil
         }
 
@@ -64,6 +66,7 @@ class TabNameService {
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
+        NSLog("[AutoName] Process exited with status: %d", process.terminationStatus)
         guard process.terminationStatus == 0 else { return nil }
         guard let output = String(data: data, encoding: .utf8) else {
             return nil

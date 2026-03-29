@@ -281,38 +281,55 @@ class SessionStore {
     /// Automatically rename a plain terminal session based on the user's prompt.
     /// Called when a waitingForInput -> working transition is detected.
     func autoRenameIfNeeded(_ id: UUID, prompt: String) {
-        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+        NSLog("[AutoName] autoRenameIfNeeded called with prompt: %@", String(prompt.prefix(100)))
+        guard let index = sessions.firstIndex(where: { $0.id == id }) else {
+            NSLog("[AutoName] Session not found: %@", id.uuidString.prefix(8).description)
+            return
+        }
         let session = sessions[index]
 
         // Only auto-name plain terminals that haven't been manually renamed
-        guard session.isAutoNamed, session.projectPath == nil else { return }
+        guard session.isAutoNamed, session.projectPath == nil else {
+            NSLog("[AutoName] Skipped: isAutoNamed=%d, projectPath=%@", session.isAutoNamed ? 1 : 0, session.projectPath ?? "<nil>")
+            return
+        }
 
         // Check cooldown
         if let lastTime = lastRenameTime[id],
            Date().timeIntervalSince(lastTime) < Self.renameCooldown {
+            NSLog("[AutoName] Skipped: cooldown active")
             return
         }
 
         // Check if naming is already in flight for this session
-        guard !namingInFlight.contains(id) else { return }
+        guard !namingInFlight.contains(id) else {
+            NSLog("[AutoName] Skipped: naming already in flight")
+            return
+        }
 
         // First prompt: always trigger naming
         // Subsequent prompts: check for topic shift
         if session.projectName != "Terminal" {
-            guard let lastPrompt = session.lastAutoNamePrompt else { return }
+            guard let lastPrompt = session.lastAutoNamePrompt else {
+                NSLog("[AutoName] Skipped: no lastAutoNamePrompt for non-Terminal tab")
+                return
+            }
             let oldWords = Set(lastPrompt.lowercased().split(separator: " "))
             let newWords = Set(prompt.lowercased().split(separator: " "))
             let overlap = oldWords.intersection(newWords)
             let totalUnique = oldWords.union(newWords)
             // If more than 50% overlap, topic hasn't shifted enough
             if !totalUnique.isEmpty && Double(overlap.count) / Double(totalUnique.count) > 0.5 {
+                NSLog("[AutoName] Skipped: topic overlap too high (%.2f)", Double(overlap.count) / Double(totalUnique.count))
                 return
             }
         }
 
+        NSLog("[AutoName] Triggering name generation for: %@", String(prompt.prefix(100)))
         namingInFlight.insert(id)
 
         TabNameService.shared.generateName(from: prompt) { [weak self] name in
+            NSLog("[AutoName] CLI returned: %@", name ?? "<nil>")
             guard let self, let name else {
                 self?.namingInFlight.remove(id)
                 return
@@ -322,6 +339,7 @@ class SessionStore {
                 self.namingInFlight.remove(id)
                 return
             }
+            NSLog("[AutoName] Renaming tab to: %@", name)
             self.sessions[idx].projectName = name
             self.sessions[idx].lastAutoNamePrompt = prompt
             self.lastRenameTime[id] = Date()

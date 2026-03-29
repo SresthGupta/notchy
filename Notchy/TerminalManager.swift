@@ -186,8 +186,13 @@ class ClickThroughTerminalView: LocalProcessTerminalView {
         }
 
         // Detect waitingForInput -> working transition for auto-naming
+        if newStatus != lastReportedStatus {
+            NSLog("[AutoName] Status transition: %@ -> %@ (session: %@)", "\(lastReportedStatus)", "\(newStatus)", id.uuidString.prefix(8).description)
+        }
         if newStatus == .working && lastReportedStatus == .waitingForInput {
-            if let prompt = extractUserPrompt() {
+            let prompt = extractUserPrompt()
+            NSLog("[AutoName] Transition detected! Prompt extracted: %@", prompt ?? "<nil>")
+            if let prompt {
                 DispatchQueue.main.async {
                     SessionStore.shared.autoRenameIfNeeded(id, prompt: prompt)
                 }

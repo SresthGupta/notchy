@@ -1,5 +1,4 @@
 import AppKit
-import Carbon.HIToolbox
 import ScreenCaptureKit
 import SwiftUI
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -10,9 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverHideTimer: Timer?
     private var hoverGlobalMonitor: Any?
     private var hoverLocalMonitor: Any?
-    private var carbonHandlerRef: EventHandlerRef?
-    private var toggleHotkeyRef: EventHotKeyRef?
-    private var screenshotHotkeyRef: EventHotKeyRef?
+    private var eventTap: CFMachPort?
     /// Whether the panel was opened via notch hover (vs status item click)
     private var panelOpenedViaHover = false
     private let hoverMargin: CGFloat = 15
@@ -102,36 +99,71 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupHotkey() {
-        // Carbon RegisterEventHotKey intercepts at the system level before any
-        // app sees the event. NSEvent.addGlobalMonitorForEvents only observes
-        // and fails when the frontmost app handles the key combo.
+        // CGEvent tap intercepts key events at the session level before any app
+        // processes them. Requires Accessibility permission.
+        //
+        // Hotkeys:
+        //   Cmd+Shift+, (comma)  -> toggle panel
+        //   Cmd+Shift+. (period) -> screenshot
 
-        var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
-            var hotKeyID = EventHotKeyID()
-            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
-            switch hotKeyID.id {
-            case 1:
-                DispatchQueue.main.async {
-                    (NSApp.delegate as? AppDelegate)?.togglePanel()
+        let callback: CGEventTapCallBack = { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+            guard type == .keyDown else {
+                // If the tap is disabled by the system (timeout), re-enable it
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    if let refcon {
+                        let appDelegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+                        if let tap = appDelegate.eventTap {
+                            CGEvent.tapEnable(tap: tap, enable: true)
+                        }
+                    }
+                    return Unmanaged.passRetained(event)
                 }
-            case 2:
-                DispatchQueue.main.async {
-                    (NSApp.delegate as? AppDelegate)?.captureAndSendScreenshot()
-                }
-            default:
-                break
+                return Unmanaged.passRetained(event)
             }
-            return noErr
-        }, 1, &eventSpec, nil, &carbonHandlerRef)
 
-        // Cmd+Shift+Z for panel toggle
-        let toggleHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 1)
-        RegisterEventHotKey(UInt32(kVK_ANSI_Z), UInt32(cmdKey | shiftKey), toggleHotKeyID, GetApplicationEventTarget(), 0, &toggleHotkeyRef)
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            let flags = event.flags
 
-        // Cmd+Shift+S for screenshot
-        let screenshotHotKeyID = EventHotKeyID(signature: OSType(0x4E544348), id: 2)
-        RegisterEventHotKey(UInt32(kVK_ANSI_S), UInt32(cmdKey | shiftKey), screenshotHotKeyID, GetApplicationEventTarget(), 0, &screenshotHotkeyRef)
+            let hasCmd = flags.contains(.maskCommand)
+            let hasShift = flags.contains(.maskShift)
+
+            if hasCmd && hasShift {
+                // Cmd+Shift+, (comma, keyCode 43) -> toggle panel
+                if keyCode == 43 {
+                    DispatchQueue.main.async {
+                        (NSApp.delegate as? AppDelegate)?.togglePanel()
+                    }
+                    return nil  // consume the event
+                }
+                // Cmd+Shift+. (period, keyCode 47) -> screenshot
+                if keyCode == 47 {
+                    DispatchQueue.main.async {
+                        (NSApp.delegate as? AppDelegate)?.captureAndSendScreenshot()
+                    }
+                    return nil  // consume the event
+                }
+            }
+
+            return Unmanaged.passRetained(event)
+        }
+
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(1 << CGEventType.keyDown.rawValue),
+            callback: callback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            print("[Notchy] Failed to create event tap. Check Accessibility permissions in System Settings > Privacy & Security > Accessibility.")
+            return
+        }
+
+        self.eventTap = tap
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
     }
 
     // MARK: - Screenshot Capture

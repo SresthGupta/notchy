@@ -169,11 +169,6 @@ class TerminalPanel: NSPanel {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        // Cmd+Shift+S: screenshot capture (must come before Cmd+S check)
-        if event.modifierFlags.contains(.command) && event.modifierFlags.contains(.shift) && event.charactersIgnoringModifiers == "s" {
-            (NSApp.delegate as? AppDelegate)?.captureAndSendScreenshot()
-            return true
-        }
         if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) && event.charactersIgnoringModifiers == "s" {
             sessionStore.createCheckpointForActiveSession()
             return true

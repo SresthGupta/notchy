@@ -185,24 +185,30 @@ class ClickThroughTerminalView: LocalProcessTerminalView {
             newStatus = .idle
         }
 
-        // Detect waitingForInput -> working transition for auto-naming
-        if newStatus != lastReportedStatus {
-            NSLog("[AutoName] Status transition: %@ -> %@ (session: %@)", "\(lastReportedStatus)", "\(newStatus)", id.uuidString.prefix(8).description)
-        }
-        if newStatus == .working && lastReportedStatus == .waitingForInput {
-            let prompt = extractUserPrompt()
-            NSLog("[AutoName] Transition detected! Prompt extracted: %@", prompt ?? "<nil>")
-            if let prompt {
-                DispatchQueue.main.async {
-                    SessionStore.shared.autoRenameIfNeeded(id, prompt: prompt)
-                }
+        // Capture user prompt before dispatching status update, while buffer still has it
+        var capturedPrompt: String?
+        if newStatus == .working && lastReportedStatus != .working {
+            capturedPrompt = extractUserPrompt()
+            // Fallback: if prompt extraction fails, use the visible text above separator
+            if capturedPrompt == nil {
+                capturedPrompt = extractVisibleText()
             }
+            NSLog("[AutoName] Entering working state, captured prompt: %@", capturedPrompt ?? "<nil>")
         }
         lastReportedStatus = newStatus
 
         if !SessionStore.shared.sessions.contains(where: {$0.id == id && $0.terminalStatus == newStatus}) {
             DispatchQueue.main.async {
                 SessionStore.shared.updateTerminalStatus(id, status: newStatus)
+                // Trigger auto-naming after status is updated
+                if let prompt = capturedPrompt {
+                    SessionStore.shared.autoRenameIfNeeded(id, prompt: prompt)
+                }
+            }
+        } else if let prompt = capturedPrompt {
+            // Status didn't change but we still captured a prompt (rare edge case)
+            DispatchQueue.main.async {
+                SessionStore.shared.autoRenameIfNeeded(id, prompt: prompt)
             }
         }
     }

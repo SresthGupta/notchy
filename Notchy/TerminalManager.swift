@@ -221,7 +221,7 @@ class TerminalManager: NSObject, LocalProcessTerminalViewDelegate {
         // cd to ~/Agents and launch claude with remote control enabled
         let agentsDir = shellEscape(NSHomeDirectory() + "/Agents")
         if launchClaude {
-            terminal.send(txt: "cd \(agentsDir) && clear && claude --dangerously-skip-permissions\r")
+            terminal.send(txt: "cd \(agentsDir) && clear && claude --dangerously-skip-permissions --remote-control\r")
         } else {
             terminal.send(txt: "cd \(agentsDir) && clear\r")
         }

@@ -38,9 +38,8 @@ class TabNameService {
         process.arguments = [
             "--print",
             "--model", "haiku",
-            "-p",
-            "Return ONLY a 2-4 word lowercase tab name summarizing this task. No quotes, no punctuation, no explanation. Examples: fix auth bug, refactor api client, add dark mode, update tests",
-            prompt
+            "--bare",
+            "Return ONLY a 2-4 word lowercase tab name summarizing this task. No quotes, no punctuation, no explanation. Examples: fix auth bug, refactor api client, add dark mode, update tests. The task: \(prompt)"
         ]
 
         let stdout = Pipe()

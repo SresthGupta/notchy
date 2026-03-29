@@ -1,6 +1,12 @@
 import AppKit
+import KeyboardShortcuts
 import ScreenCaptureKit
 import SwiftUI
+
+extension KeyboardShortcuts.Name {
+    static let togglePanel = Self("togglePanel", default: .init(.n, modifiers: [.command, .option]))
+    static let screenshotToClaude = Self("screenshotToClaude", default: .init(.f, modifiers: [.command, .option]))
+}
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panel: TerminalPanel!
@@ -9,7 +15,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverHideTimer: Timer?
     private var hoverGlobalMonitor: Any?
     private var hoverLocalMonitor: Any?
-    private var eventTap: CFMachPort?
+    // KeyboardShortcuts manages its own handler lifecycle internally via static registrations
+    /// Screenshot captured but not yet sent (waiting for prompt input)
+    private var pendingScreenshotPath: String?
     /// Whether the panel was opened via notch hover (vs status item click)
     private var panelOpenedViaHover = false
     private let hoverMargin: CGFloat = 15
@@ -41,7 +49,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if replaceNotch {
             setupNotchWindow()
         }
-        setupHotkey()
+        setupHotkeys()
+        checkPermissions()
         applyStealthMode()
         // Detect in background so launch isn't blocked
         sessionStore.detectAllXcodeProjectsAsync()
@@ -93,126 +102,160 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow?.isPanelVisible = { [weak self] in
             self?.panel.isVisible ?? false
         }
+        notchWindow?.onPromptSubmit = { [weak self] text in
+            self?.handlePromptSubmit(text: text)
+        }
+        notchWindow?.onPromptDismiss = { [weak self] in
+            self?.handlePromptDismiss()
+        }
         if stealthMode {
             notchWindow?.sharingType = .none
         }
     }
 
-    private func setupHotkey() {
-        // CGEvent tap intercepts key events at the session level before any app
-        // processes them. Requires Accessibility permission.
-        //
-        // Hotkeys:
-        //   Cmd+Shift+D -> toggle panel
-        //   Cmd+Shift+F -> screenshot
+    private func setupHotkeys() {
+        // Force-reset the toggle shortcut to Cmd+Option+N
+        // (KeyboardShortcuts persists user prefs in UserDefaults; the old Cmd+Option+D
+        // binding may be cached from a previous run and conflicts with Dock show/hide)
+        KeyboardShortcuts.reset(.togglePanel)
 
-        let callback: CGEventTapCallBack = { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
-            guard type == .keyDown else {
-                // If the tap is disabled by the system (timeout), re-enable it
-                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    if let refcon {
-                        let appDelegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
-                        if let tap = appDelegate.eventTap {
-                            CGEvent.tapEnable(tap: tap, enable: true)
-                        }
-                    }
-                    return Unmanaged.passRetained(event)
-                }
-                return Unmanaged.passRetained(event)
-            }
-
-            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-            let flags = event.flags
-
-            let hasCmd = flags.contains(.maskCommand)
-            let hasShift = flags.contains(.maskShift)
-
-            if hasCmd && hasShift {
-                // Cmd+Shift+D (keyCode 2) -> toggle panel
-                if keyCode == 2 {
-                    DispatchQueue.main.async {
-                        (NSApp.delegate as? AppDelegate)?.togglePanel()
-                    }
-                    return nil  // consume the event
-                }
-                // Cmd+Shift+F (keyCode 3) -> screenshot
-                if keyCode == 3 {
-                    DispatchQueue.main.async {
-                        (NSApp.delegate as? AppDelegate)?.captureAndSendScreenshot()
-                    }
-                    return nil  // consume the event
-                }
-            }
-
-            return Unmanaged.passRetained(event)
+        KeyboardShortcuts.onKeyUp(for: .togglePanel) { [weak self] in
+            self?.togglePanel()
         }
-
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: CGEventMask(1 << CGEventType.keyDown.rawValue),
-            callback: callback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else {
-            print("[Notchy] Failed to create event tap. Check Accessibility permissions in System Settings > Privacy & Security > Accessibility.")
-            return
+        KeyboardShortcuts.onKeyUp(for: .screenshotToClaude) { [weak self] in
+            self?.captureAndSendScreenshot()
         }
+    }
 
-        self.eventTap = tap
+    // MARK: - Permission Checking
 
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+    private func checkPermissions() {
+        // AXIsProcessTrustedWithOptions with prompt: true automatically opens
+        // System Settings > Accessibility if not trusted. No additional alert needed.
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 
     // MARK: - Screenshot Capture
 
+    private static let defaultScreenshotPrompt = "Help me with what you see on my screen."
+
     func captureAndSendScreenshot() {
-        guard let activeId = sessionStore.activeSessionId else { return }
-        guard TerminalManager.shared.terminalIfExists(for: activeId) != nil else { return }
+        if stealthMode {
+            // Stealth mode: capture and send immediately with default prompt
+            Task {
+                guard let path = await captureScreenshot() else { return }
+                await MainActor.run {
+                    sendScreenshot(path: path, prompt: Self.defaultScreenshotPrompt)
+                }
+            }
+        } else {
+            // Non-stealth: capture first, then show prompt box
+            guard pendingScreenshotPath == nil else { return } // ignore rapid double-press
+            Task {
+                guard let path = await captureScreenshot() else { return }
+                await MainActor.run {
+                    self.pendingScreenshotPath = path
+                    if let nw = self.notchWindow {
+                        NSApp.activate(ignoringOtherApps: true)
+                        nw.showPromptInput()
+                    } else {
+                        // No notch window (user disabled it) -- send with default prompt
+                        self.sendScreenshot(path: path, prompt: Self.defaultScreenshotPrompt)
+                        self.pendingScreenshotPath = nil
+                    }
+                }
+            }
+        }
+    }
 
-        // Find the screen containing the mouse cursor
+    /// Captures the screen (excluding Notchy windows) and returns the temp file path, or nil on failure.
+    private func captureScreenshot() async -> String? {
         let mouseLocation = NSEvent.mouseLocation
-        guard let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) ?? NSScreen.main else { return }
-        guard let displayID = targetScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return }
+        guard let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) ?? NSScreen.main else { return nil }
+        guard let displayID = targetScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return nil }
 
-        // Capture window numbers on main thread before entering async Task
         var notchyWindowIDs: Set<CGWindowID> = [CGWindowID(panel.windowNumber)]
         if let nw = notchWindow {
             notchyWindowIDs.insert(CGWindowID(nw.windowNumber))
         }
 
-        Task {
-            do {
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                guard let scDisplay = content.displays.first(where: { $0.displayID == displayID }) else { return }
-                let excludedWindows = content.windows.filter { notchyWindowIDs.contains(CGWindowID($0.windowID)) }
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let scDisplay = content.displays.first(where: { $0.displayID == displayID }) else { return nil }
+            let excludedWindows = content.windows.filter { notchyWindowIDs.contains(CGWindowID($0.windowID)) }
 
-                let filter = SCContentFilter(display: scDisplay, excludingWindows: excludedWindows)
-                let config = SCStreamConfiguration()
-                config.width = scDisplay.width * 2
-                config.height = scDisplay.height * 2
-                config.showsCursor = false
+            let filter = SCContentFilter(display: scDisplay, excludingWindows: excludedWindows)
+            let config = SCStreamConfiguration()
+            config.width = scDisplay.width * 2
+            config.height = scDisplay.height * 2
+            config.showsCursor = false
 
-                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
 
-                // Save to temp file
-                let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-                let path = "/tmp/notchy-screenshot-\(timestamp).png"
-                let url = URL(fileURLWithPath: path)
-                let rep = NSBitmapImageRep(cgImage: image)
-                guard let pngData = rep.representation(using: .png, properties: [:]) else { return }
-                try pngData.write(to: url)
-
-                // Send to active terminal session
-                await MainActor.run {
-                    TerminalManager.shared.sendText(to: activeId, text: "\(path) Help me with what you see on my screen.\r")
+            let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+            let path = "/tmp/notchy-screenshot-\(timestamp).png"
+            let url = URL(fileURLWithPath: path)
+            let rep = NSBitmapImageRep(cgImage: image)
+            guard let pngData = rep.representation(using: .png, properties: [:]) else { return nil }
+            try pngData.write(to: url)
+            return path
+        } catch {
+            await MainActor.run { [weak self] in
+                guard self?.stealthMode != true else {
+                    print("[Notchy] Screenshot failed (alert suppressed in stealth mode). Grant Screen Recording permission in System Settings.")
+                    return
                 }
-            } catch {
-                // Silent failure -- no visible indication during stealth usage
+                let alert = NSAlert()
+                alert.messageText = "Screenshot Failed"
+                alert.informativeText = "Notchy needs Screen Recording permission. Grant it in System Settings > Privacy & Security > Screen Recording, then restart Notchy."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+            return nil
+        }
+    }
+
+    /// Sends a screenshot + prompt to the active Claude session, creating one if needed.
+    private func sendScreenshot(path: String, prompt: String) {
+        if sessionStore.activeSessionId == nil {
+            sessionStore.createQuickSession(name: "Screen Help")
+        }
+        guard let activeId = sessionStore.activeSessionId else { return }
+
+        if !panel.isVisible {
+            panelOpenedViaHover = false
+            NSApp.activate(ignoringOtherApps: true)
+            showPanelBelowStatusItem()
+        }
+
+        let sendBlock = {
+            TerminalManager.shared.sendText(to: activeId, text: "\(path) \(prompt)\r")
+        }
+        if TerminalManager.shared.terminalIfExists(for: activeId) != nil {
+            sendBlock()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                sendBlock()
             }
         }
+    }
+
+    /// Called by NotchWindow when the user submits a prompt.
+    private func handlePromptSubmit(text: String) {
+        guard let path = pendingScreenshotPath else { return }
+        pendingScreenshotPath = nil
+        let prompt = text.isEmpty ? Self.defaultScreenshotPrompt : text
+        // Delay to let collapse animation finish before opening panel
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            self?.sendScreenshot(path: path, prompt: prompt)
+        }
+    }
+
+    /// Called by NotchWindow when the user dismisses the prompt.
+    private func handlePromptDismiss() {
+        pendingScreenshotPath = nil
     }
 
     private func notchHovered() {
@@ -305,7 +348,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             stopHoverTracking()
         } else {
             panelOpenedViaHover = false
-            // Show panel immediately
+            // Activate the app so the panel doesn't immediately resign key
+            NSApp.activate(ignoringOtherApps: true)
             showPanelBelowStatusItem()
 
             // Then detect projects in background
@@ -459,6 +503,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sharingType: NSWindow.SharingType = stealthMode ? .none : .readOnly
         panel.sharingType = sharingType
         notchWindow?.sharingType = sharingType
+        notchWindow?.setStealthOutline(stealthMode)
     }
 
     @objc private func devReload() {

@@ -24,6 +24,19 @@ class NotchWindow: NSPanel {
     /// Whether the notch is currently expanded (wider, for working state)
     private var isExpanded = false
 
+    /// Whether the prompt input is currently showing
+    var isShowingPrompt = false
+
+    /// Event monitor for click-outside detection during prompt mode
+    private var clickOutsideMonitor: Any?
+    /// Event monitor for Escape key during prompt mode
+    private var escapeKeyMonitor: Any?
+
+    /// Callback fired when the user submits a prompt (text may be empty for default)
+    var onPromptSubmit: ((String) -> Void)?
+    /// Callback fired when the user dismisses the prompt
+    var onPromptDismiss: (() -> Void)?
+
     /// Debounce timer for collapsing — prevents rapid expand/collapse cycling
     /// when terminal status flickers between .working and .idle.
     private var collapseDebounceTimer: Timer?
@@ -106,6 +119,7 @@ class NotchWindow: NSPanel {
     }
 
     deinit {
+        teardownPromptEventMonitors()
         if let monitor = mouseMonitor {
             NSEvent.removeMonitor(monitor)
         }
@@ -147,6 +161,7 @@ class NotchWindow: NSPanel {
     }
 
     private func updateExpansionState() {
+        guard !isShowingPrompt else { return } // prompt mode takes priority
         let shouldExpand = NotchDisplayState.current != .idle
 
         if shouldExpand && !isExpanded {
@@ -271,6 +286,101 @@ class NotchWindow: NSPanel {
         displayLink.start()
     }
 
+    // MARK: - Prompt Expansion / Collapse
+
+    private static let promptExpandedWidth: CGFloat = 350
+    private static let promptExpandedHeight: CGFloat = 55
+
+    private func expandForPrompt() {
+        guard let screen = NSScreen.builtIn else { return }
+        let screenFrame = screen.frame
+
+        let targetWidth = Self.promptExpandedWidth
+        let targetHeight = Self.promptExpandedHeight
+        let targetFrame = NSRect(
+            x: screenFrame.midX - targetWidth / 2,
+            y: screenFrame.maxY - targetHeight,
+            width: targetWidth,
+            height: targetHeight
+        )
+
+        pillView.isPromptMode = true
+        pillView.alphaValue = 1
+        pillContentHost?.alphaValue = 1
+
+        let startFrame = frame
+        let startTime = CACurrentMediaTime()
+        let duration: Double = 0.5
+
+        let displayLink = CVDisplayLinkWrapper { [weak self] in
+            guard let self else { return false }
+            let elapsed = CACurrentMediaTime() - startTime
+            let t = min(elapsed / duration, 1.0)
+            let bounce = Self.bounceEase(t)
+
+            let currentX = startFrame.origin.x + (targetFrame.origin.x - startFrame.origin.x) * bounce
+            let currentY = startFrame.origin.y + (targetFrame.origin.y - startFrame.origin.y) * bounce
+            let currentWidth = startFrame.width + (targetFrame.width - startFrame.width) * bounce
+            let currentHeight = startFrame.height + (targetFrame.height - startFrame.height) * bounce
+
+            DispatchQueue.main.async {
+                self.setFrame(
+                    NSRect(x: currentX, y: currentY, width: currentWidth, height: currentHeight),
+                    display: true
+                )
+            }
+            return t < 1.0
+        }
+        displayLink.start()
+    }
+
+    private func collapseFromPrompt() {
+        guard let screen = NSScreen.builtIn else { return }
+        let screenFrame = screen.frame
+
+        let targetFrame = NSRect(
+            x: screenFrame.midX - notchWidth / 2,
+            y: screenFrame.maxY - notchHeight,
+            width: notchWidth,
+            height: notchHeight
+        )
+
+        // Fade out content first
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            self.pillContentHost?.animator().alphaValue = 0
+        }
+
+        let startFrame = frame
+        let startTime = CACurrentMediaTime()
+        let duration: Double = 0.3
+
+        let displayLink = CVDisplayLinkWrapper { [weak self] in
+            guard let self else { return false }
+            let elapsed = CACurrentMediaTime() - startTime
+            let t = min(elapsed / duration, 1.0)
+            let ease = 1.0 - pow(1.0 - t, 3.0)
+
+            let currentX = startFrame.origin.x + (targetFrame.origin.x - startFrame.origin.x) * ease
+            let currentY = startFrame.origin.y + (targetFrame.origin.y - startFrame.origin.y) * ease
+            let currentWidth = startFrame.width + (targetFrame.width - startFrame.width) * ease
+            let currentHeight = startFrame.height + (targetFrame.height - startFrame.height) * ease
+
+            DispatchQueue.main.async {
+                self.setFrame(
+                    NSRect(x: currentX, y: currentY, width: currentWidth, height: currentHeight),
+                    display: true
+                )
+                if t >= 1.0 {
+                    self.pillView.isPromptMode = false
+                    self.pillContentHost?.alphaValue = 1
+                }
+            }
+            return t < 1.0
+        }
+        displayLink.start()
+    }
+
     /// Spring / bounce easing — overshoots then settles
     private static func bounceEase(_ t: Double) -> Double {
         let omega = 12.0  // frequency
@@ -322,6 +432,7 @@ class NotchWindow: NSPanel {
     }
 
     private func checkMouse() {
+        guard !isShowingPrompt else { return }
         let mouseLocation = NSEvent.mouseLocation
 
         // Check the notch area itself
@@ -364,6 +475,10 @@ class NotchWindow: NSPanel {
         hoverShrink()
     }
 
+    func setStealthOutline(_ visible: Bool, animated: Bool = true) {
+        pillView.setStealthOutline(visible, animated: animated)
+    }
+
     // MARK: - Hover grow / shrink
 
     private static let hoverGrowX: CGFloat = 0 + NotchPillView.earRadius * 2  // extra width for ear protrusions
@@ -380,12 +495,14 @@ class NotchWindow: NSPanel {
     }
 
     private func hoverGrow() {
+        guard !isShowingPrompt else { return }
         pillView.isHovered = true
         pillContentHost?.rootView = NotchPillContent(isHovering: true)
         setFrame(applyHoverGrow(to: frame), display: true)
     }
 
     private func hoverShrink() {
+        guard !isShowingPrompt else { return }
         pillView.isHovered = false
         pillContentHost?.rootView = NotchPillContent(isHovering: false)
         guard let screen = NSScreen.builtIn else { return }
@@ -413,8 +530,93 @@ class NotchWindow: NSPanel {
         }
     }
 
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { isShowingPrompt }
     override var canBecomeMain: Bool { false }
+
+    override func resignKey() {
+        super.resignKey()
+        if isShowingPrompt {
+            dismissPrompt()
+        }
+    }
+
+    // MARK: - Prompt Input
+
+    func showPromptInput() {
+        guard !isShowingPrompt else { return }
+        isShowingPrompt = true
+
+        // Suppress any pending status-driven collapse
+        collapseDebounceTimer?.invalidate()
+        collapseDebounceTimer = nil
+
+        NSApp.activate(ignoringOtherApps: true)
+        makeKeyAndOrderFront(nil)
+
+        expandForPrompt()
+
+        // Swap content to prompt input
+        pillContentHost?.rootView = NotchPillContent(isHovering: false, isPromptMode: true, onPromptSubmit: { [weak self] text in
+            self?.submitPrompt(text: text)
+        })
+
+        // Set up click-outside and Escape detection
+        setupPromptEventMonitors()
+    }
+
+    func submitPrompt(text: String) {
+        guard isShowingPrompt else { return }
+        isShowingPrompt = false
+        teardownPromptEventMonitors()
+
+        // Swap content back before collapsing
+        pillContentHost?.rootView = NotchPillContent(isHovering: isHovered)
+
+        collapseFromPrompt()
+        onPromptSubmit?(text)
+    }
+
+    func dismissPrompt() {
+        guard isShowingPrompt else { return }
+        isShowingPrompt = false
+        teardownPromptEventMonitors()
+
+        pillContentHost?.rootView = NotchPillContent(isHovering: isHovered)
+
+        collapseFromPrompt()
+        onPromptDismiss?()
+    }
+
+    private func setupPromptEventMonitors() {
+        // Escape key
+        escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { // Escape
+                self?.dismissPrompt()
+                return nil // consume the event
+            }
+            return event
+        }
+
+        // Click outside
+        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self, self.isShowingPrompt else { return }
+            let mouseLocation = NSEvent.mouseLocation
+            if !self.frame.contains(mouseLocation) {
+                self.dismissPrompt()
+            }
+        }
+    }
+
+    private func teardownPromptEventMonitors() {
+        if let monitor = escapeKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            escapeKeyMonitor = nil
+        }
+        if let monitor = clickOutsideMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickOutsideMonitor = nil
+        }
+    }
 }
 
 // MARK: - NSScreen helper
@@ -443,6 +645,14 @@ class NotchPillView: NSView {
         }
     }
 
+    var isPromptMode: Bool = false {
+        didSet {
+            guard isPromptMode != oldValue else { return }
+            needsDisplay = true
+            needsLayout = true
+        }
+    }
+
     private let shapeLayer = CAShapeLayer()
     static let earRadius: CGFloat = 10
 
@@ -452,6 +662,8 @@ class NotchPillView: NSView {
         layer?.masksToBounds = false
         layer?.backgroundColor = .clear
         shapeLayer.fillColor = NSColor.black.cgColor
+        shapeLayer.strokeColor = NSColor(white: 0.5, alpha: 0).cgColor
+        shapeLayer.lineWidth = 1.0
         layer?.addSublayer(shapeLayer)
     }
 
@@ -473,6 +685,26 @@ class NotchPillView: NSView {
         shapeLayer.frame = CGRect(x: 0, y: 0, width: w, height: h)
 
         let path = CGMutablePath()
+
+        if isPromptMode {
+            // Larger rounded rectangle for the prompt input
+            let cr: CGFloat = 12
+            path.move(to: CGPoint(x: 0, y: h))
+            path.addLine(to: CGPoint(x: w, y: h))
+            path.addLine(to: CGPoint(x: w, y: cr))
+            path.addQuadCurve(
+                to: CGPoint(x: w - cr, y: 0),
+                control: CGPoint(x: w, y: 0)
+            )
+            path.addLine(to: CGPoint(x: cr, y: 0))
+            path.addQuadCurve(
+                to: CGPoint(x: 0, y: cr),
+                control: CGPoint(x: 0, y: 0)
+            )
+            path.closeSubpath()
+            shapeLayer.path = path
+            return
+        }
 
         if isHovered {
             // Main body is inset by ear on each side; ears fill the extra space
@@ -497,6 +729,7 @@ class NotchPillView: NSView {
                 to: CGPoint(x: w, y: 0),
                 control: CGPoint(x: bodyRight, y: 0)
             )
+            path.closeSubpath()
         } else {
             let cr: CGFloat = 9.5
             path.move(to: CGPoint(x: 0, y: h))
@@ -515,6 +748,19 @@ class NotchPillView: NSView {
         }
 
         shapeLayer.path = path
+    }
+
+    func setStealthOutline(_ visible: Bool, animated: Bool = true) {
+        let targetColor = NSColor(white: 0.5, alpha: visible ? 1 : 0).cgColor
+        if animated {
+            let anim = CABasicAnimation(keyPath: "strokeColor")
+            anim.fromValue = shapeLayer.strokeColor
+            anim.toValue = targetColor
+            anim.duration = 0.3
+            anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            shapeLayer.add(anim, forKey: "stealthStroke")
+        }
+        shapeLayer.strokeColor = targetColor
     }
 }
 
@@ -546,9 +792,21 @@ enum NotchDisplayState: Equatable {
 
 struct NotchPillContent: View {
     var isHovering: Bool = false
+    var isPromptMode: Bool = false
+    var onPromptSubmit: ((String) -> Void)?
     private var displayState: NotchDisplayState { .current }
 
     var body: some View {
+        if isPromptMode {
+            PromptInputView(onSubmit: { text in
+                onPromptSubmit?(text)
+            })
+        } else {
+            statusContent
+        }
+    }
+
+    private var statusContent: some View {
         ZStack {
             HStack {
 
@@ -558,13 +816,10 @@ struct NotchPillContent: View {
                         .foregroundColor(.clear)
                         .frame(width: 18, height: 18)
                         .overlay(alignment: .leading) {
-                            BotFaceView() //state: displayState
+                            BotFaceView()
                                 .frame(width: 20, height: 15)
                                 .mask(RoundedRectangle(cornerRadius: 5))
                         }
-//                        .offset(x: 2)
-//                        .padding(.leading, -2)
-
 
                     Spacer()
 
@@ -590,17 +845,48 @@ struct NotchPillContent: View {
             }
             .animation(.easeInOut(duration: 0.25), value: displayState)
             .padding(.horizontal, 12 + (isHovering ? NotchPillView.earRadius : 0))
-
-            // Debug: show current displayState
-//            Text("\(String(describing: displayState))")
-//                .font(.system(size: 10, weight: .medium, design: .monospaced))
-//                .foregroundColor(.white)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
         .offset(y: isHovering ? -3 : -2)
         .onChange(of: displayState) {
             NotificationCenter.default.post(name: .NotchyNotchStatusChanged, object: nil)
+        }
+    }
+}
+
+struct PromptInputView: View {
+    @State private var promptText = ""
+    @FocusState private var isFocused: Bool
+    var onSubmit: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "camera.fill")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.5))
+
+            TextField("Ask about your screen...", text: $promptText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundColor(.white)
+                .focused($isFocused)
+                .onSubmit {
+                    onSubmit(promptText)
+                }
+
+            Image(systemName: "return")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.3))
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.clear)
+        .onAppear {
+            // Slight delay to let the window become key first
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                isFocused = true
+            }
         }
     }
 }

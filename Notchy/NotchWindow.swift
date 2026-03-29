@@ -707,11 +707,7 @@ class NotchPillView: NSView {
                 control: CGPoint(x: 0, y: 0)
             )
             path.closeSubpath()
-            shapeLayer.path = path
-            return
-        }
-
-        if isHovered {
+        } else if isHovered {
             // Main body is inset by ear on each side; ears fill the extra space
             let bodyLeft = ear
             let bodyRight = w - ear

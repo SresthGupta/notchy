@@ -160,6 +160,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Captures the screen (excluding Notchy windows) and returns the temp file path, or nil on failure.
     private func captureScreenshot() async -> String? {
+        // Pre-check Screen Recording permission before touching ScreenCaptureKit.
+        // Without this, SCShareableContent/SCScreenshotManager can crash (signal, not
+        // a catchable Swift error) on first launch before permission is granted.
+        guard CGPreflightScreenCaptureAccess() else {
+            CGRequestScreenCaptureAccess()
+            return nil
+        }
+
         let mouseLocation = NSEvent.mouseLocation
         guard let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) ?? NSScreen.main else { return nil }
         guard let displayID = targetScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return nil }

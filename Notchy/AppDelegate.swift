@@ -363,7 +363,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             panelOpenedViaHover = false
             // Activate the app so the panel doesn't immediately resign key
             NSApp.activate(ignoringOtherApps: true)
-            showPanelBelowStatusItem()
+            showPanelBelowNotch()
 
             // Then detect projects in background
             sessionStore.detectAndSwitchAsync()

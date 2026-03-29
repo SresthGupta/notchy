@@ -103,8 +103,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // processes them. Requires Accessibility permission.
         //
         // Hotkeys:
-        //   Cmd+Shift+, (comma)  -> toggle panel
-        //   Cmd+Shift+. (period) -> screenshot
+        //   Cmd+Shift+D -> toggle panel
+        //   Cmd+Shift+F -> screenshot
 
         let callback: CGEventTapCallBack = { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
             guard type == .keyDown else {
@@ -128,15 +128,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let hasShift = flags.contains(.maskShift)
 
             if hasCmd && hasShift {
-                // Cmd+Shift+, (comma, keyCode 43) -> toggle panel
-                if keyCode == 43 {
+                // Cmd+Shift+D (keyCode 2) -> toggle panel
+                if keyCode == 2 {
                     DispatchQueue.main.async {
                         (NSApp.delegate as? AppDelegate)?.togglePanel()
                     }
                     return nil  // consume the event
                 }
-                // Cmd+Shift+. (period, keyCode 47) -> screenshot
-                if keyCode == 47 {
+                // Cmd+Shift+F (keyCode 3) -> screenshot
+                if keyCode == 3 {
                     DispatchQueue.main.async {
                         (NSApp.delegate as? AppDelegate)?.captureAndSendScreenshot()
                     }
@@ -415,6 +415,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 //        menu.addItem(.separator())
 
+        let reloadItem = NSMenuItem(
+            title: "Dev Reload",
+            action: #selector(devReload),
+            keyEquivalent: "r"
+        )
+        reloadItem.target = self
+        menu.addItem(reloadItem)
+
         let quitItem = NSMenuItem(
             title: "Quit Notchy",
             action: #selector(NSApplication.terminate(_:)),
@@ -451,6 +459,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sharingType: NSWindow.SharingType = stealthMode ? .none : .readOnly
         panel.sharingType = sharingType
         notchWindow?.sharingType = sharingType
+    }
+
+    @objc private func devReload() {
+        // Build the project, then relaunch the app
+        let projectDir = "/Users/sresthgupta/Agents/Apps/notchy"
+        let appPath = Bundle.main.bundlePath
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let build = Process()
+            build.executableURL = URL(fileURLWithPath: "/usr/bin/xcodebuild")
+            build.arguments = ["-project", "\(projectDir)/Notchy.xcodeproj", "-scheme", "Notchy", "-configuration", "Debug", "build"]
+            build.currentDirectoryURL = URL(fileURLWithPath: projectDir)
+            try? build.run()
+            build.waitUntilExit()
+
+            guard build.terminationStatus == 0 else {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Build Failed"
+                    alert.informativeText = "xcodebuild exited with code \(build.terminationStatus)"
+                    alert.runModal()
+                }
+                return
+            }
+
+            // Relaunch after a short delay
+            DispatchQueue.main.async {
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                task.arguments = ["-n", appPath]
+                try? task.run()
+                NSApp.terminate(nil)
+            }
+        }
     }
 
     @objc private func toggleStealthMode() {

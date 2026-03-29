@@ -218,12 +218,12 @@ class TerminalManager: NSObject, LocalProcessTerminalViewDelegate {
             execName: "-" + (shell as NSString).lastPathComponent
         )
 
-        // cd to working directory and launch claude
-        let escapedDir = shellEscape(workingDirectory)
+        // cd to ~/Agents and launch claude with remote control enabled
+        let agentsDir = shellEscape(NSHomeDirectory() + "/Agents")
         if launchClaude {
-            terminal.send(txt: "cd \(escapedDir) && clear && claude\r")
+            terminal.send(txt: "cd \(agentsDir) && clear && claude --dangerously-skip-permissions\r")
         } else {
-            terminal.send(txt: "cd \(escapedDir) && clear\r")
+            terminal.send(txt: "cd \(agentsDir) && clear\r")
         }
 
         terminals[sessionId] = terminal

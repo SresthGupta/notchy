@@ -654,6 +654,7 @@ class NotchPillView: NSView {
     }
 
     private let shapeLayer = CAShapeLayer()
+    private let stealthLineLayer = CAShapeLayer()
     static let earRadius: CGFloat = 10
 
     override init(frame: NSRect) {
@@ -662,9 +663,13 @@ class NotchPillView: NSView {
         layer?.masksToBounds = false
         layer?.backgroundColor = .clear
         shapeLayer.fillColor = NSColor.black.cgColor
-        shapeLayer.strokeColor = NSColor(white: 0.5, alpha: 0).cgColor
-        shapeLayer.lineWidth = 1.0
         layer?.addSublayer(shapeLayer)
+
+        stealthLineLayer.strokeColor = NSColor(red: 0.78, green: 0.66, blue: 0.20, alpha: 1).cgColor
+        stealthLineLayer.lineWidth = 2.0
+        stealthLineLayer.fillColor = nil
+        stealthLineLayer.opacity = 0
+        layer?.addSublayer(stealthLineLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -748,19 +753,79 @@ class NotchPillView: NSView {
         }
 
         shapeLayer.path = path
+        updateStealthLine()
+    }
+
+    private func updateStealthLine() {
+        let w = bounds.width
+        let h = bounds.height
+        guard w > 0, h > 0 else { return }
+
+        let ear = Self.earRadius
+        stealthLineLayer.frame = CGRect(x: 0, y: 0, width: w, height: h)
+
+        let linePath = CGMutablePath()
+        if isPromptMode {
+            let cr: CGFloat = 12
+            // Match the prompt box rounded rect shape
+            linePath.move(to: CGPoint(x: 0, y: h))
+            linePath.addLine(to: CGPoint(x: 0, y: cr))
+            linePath.addQuadCurve(
+                to: CGPoint(x: cr, y: 0),
+                control: CGPoint(x: 0, y: 0)
+            )
+            linePath.addLine(to: CGPoint(x: w - cr, y: 0))
+            linePath.addQuadCurve(
+                to: CGPoint(x: w, y: cr),
+                control: CGPoint(x: w, y: 0)
+            )
+            linePath.addLine(to: CGPoint(x: w, y: h))
+        } else if isHovered {
+            let bodyLeft = ear
+            let bodyRight = w - ear
+            // Left side down, left ear curve, right ear curve, right side up
+            linePath.move(to: CGPoint(x: bodyLeft, y: h))
+            linePath.addLine(to: CGPoint(x: bodyLeft, y: ear))
+            linePath.addQuadCurve(
+                to: CGPoint(x: 0, y: 0),
+                control: CGPoint(x: bodyLeft, y: 0)
+            )
+            linePath.move(to: CGPoint(x: w, y: 0))
+            linePath.addQuadCurve(
+                to: CGPoint(x: bodyRight, y: ear),
+                control: CGPoint(x: bodyRight, y: 0)
+            )
+            linePath.addLine(to: CGPoint(x: bodyRight, y: h))
+        } else {
+            let cr: CGFloat = 9.5
+            // Left side down, bottom corners, bottom edge, right side up
+            linePath.move(to: CGPoint(x: 0, y: h))
+            linePath.addLine(to: CGPoint(x: 0, y: cr))
+            linePath.addQuadCurve(
+                to: CGPoint(x: cr, y: 0),
+                control: CGPoint(x: 0, y: 0)
+            )
+            linePath.addLine(to: CGPoint(x: w - cr, y: 0))
+            linePath.addQuadCurve(
+                to: CGPoint(x: w, y: cr),
+                control: CGPoint(x: w, y: 0)
+            )
+            linePath.addLine(to: CGPoint(x: w, y: h))
+        }
+        stealthLineLayer.path = linePath
     }
 
     func setStealthOutline(_ visible: Bool, animated: Bool = true) {
-        let targetColor = NSColor(white: 0.5, alpha: visible ? 1 : 0).cgColor
+        let targetOpacity: Float = visible ? 1 : 0
         if animated {
-            let anim = CABasicAnimation(keyPath: "strokeColor")
-            anim.fromValue = shapeLayer.strokeColor
-            anim.toValue = targetColor
+            let anim = CABasicAnimation(keyPath: "opacity")
+            anim.fromValue = stealthLineLayer.opacity
+            anim.toValue = targetOpacity
             anim.duration = 0.3
             anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            shapeLayer.add(anim, forKey: "stealthStroke")
+            stealthLineLayer.add(anim, forKey: "stealthFade")
         }
-        shapeLayer.strokeColor = targetColor
+        stealthLineLayer.opacity = targetOpacity
     }
 }
 

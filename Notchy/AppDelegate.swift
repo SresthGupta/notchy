@@ -50,7 +50,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             setupNotchWindow()
         }
         setupHotkeys()
-        checkPermissions()
         applyStealthMode()
         // Detect in background so launch isn't blocked
         sessionStore.detectAllXcodeProjectsAsync()
@@ -130,10 +129,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Permission Checking
 
     private func checkPermissions() {
-        // AXIsProcessTrustedWithOptions with prompt: true automatically opens
-        // System Settings > Accessibility if not trusted. No additional alert needed.
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+        // Screen Recording is the only permission needed (for ScreenCaptureKit).
+        // KeyboardShortcuts uses Carbon RegisterEventHotKey which does NOT need
+        // Accessibility permission, so we no longer prompt for it.
+        //
+        // macOS requires an app restart after granting Screen Recording permission.
+        // If not granted, show a helpful message on first screenshot attempt instead
+        // of prompting at launch (handled in captureScreenshot via CGPreflightScreenCaptureAccess).
     }
 
     // MARK: - Screenshot Capture
@@ -163,8 +165,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Pre-check Screen Recording permission before touching ScreenCaptureKit.
         // Without this, SCShareableContent/SCScreenshotManager can crash (signal, not
         // a catchable Swift error) on first launch before permission is granted.
+        // macOS requires an app restart after granting this permission.
         guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
+            await MainActor.run { [weak self] in
+                CGRequestScreenCaptureAccess()
+                guard self?.stealthMode != true else {
+                    print("[Notchy] Screen Recording permission needed (alert suppressed in stealth mode). Grant in System Settings, then relaunch Notchy.")
+                    return
+                }
+                let alert = NSAlert()
+                alert.messageText = "Screen Recording Permission Required"
+                alert.informativeText = "Grant Screen Recording permission in System Settings, then relaunch Notchy. macOS requires a restart after granting this permission."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
             return nil
         }
 
